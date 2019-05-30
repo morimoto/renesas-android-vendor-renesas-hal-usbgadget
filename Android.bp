@@ -16,6 +16,7 @@ cc_binary {
     name: "android.hardware.usb.gadget@1.0-service.renesas",
     defaults: ["hidl_defaults"],
     init_rc: ["android.hardware.usb.gadget@1.0-service.renesas.rc"],
+    vintf_fragments: ["android.hardware.usb.gadget@1.0-service.renesas.xml"],
     relative_install_path: "hw",
     vendor: true,
     srcs: [
