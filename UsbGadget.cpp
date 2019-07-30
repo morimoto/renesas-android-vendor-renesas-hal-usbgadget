@@ -31,13 +31,11 @@ constexpr int BUFFER_SIZE = 512;
 constexpr int MAX_FILE_PATH_LENGTH = 256;
 constexpr int EPOLL_EVENTS = 10;
 constexpr bool DEBUG = false;
-constexpr int DISCONNECT_WAIT_US = 10000;
 
 #define BUILD_TYPE "ro.build.type"
 #define GADGET_PATH "/config/usb_gadget/g1/"
 #define PULLUP_PATH GADGET_PATH "UDC"
 #define GADGET_NAME "e6590000.usb"
-#define PERSISTENT_BOOT_MODE "ro.bootmode"
 #define VENDOR_ID_PATH GADGET_PATH "idVendor"
 #define PRODUCT_ID_PATH GADGET_PATH "idProduct"
 #define DEVICE_CLASS_PATH GADGET_PATH "bDeviceClass"
@@ -107,6 +105,7 @@ static void *monitorFfs(void *param) {
     lock_guard<mutex> lock(usbGadget->mLock);
     usbGadget->mCurrentUsbFunctionsApplied = true;
     gadgetPullup = true;
+    writeUdc = false;
     usbGadget->mCv.notify_all();
   }
 
@@ -131,8 +130,7 @@ static void *monitorFfs(void *param) {
           p += sizeof(struct inotify_event) + event->len;
 
           bool descriptorPresent = true;
-          for (int j = 0; j < static_cast<int>(usbGadget->mEndpointList.size());
-               j++) {
+          for (int j = 0; j < static_cast<int>(usbGadget->mEndpointList.size()); j++) {
             if (access(usbGadget->mEndpointList.at(j).c_str(), R_OK)) {
               if (DEBUG)
                 ALOGI("%s absent", usbGadget->mEndpointList.at(j).c_str());
@@ -225,7 +223,7 @@ Return<void> UsbGadget::getCurrentUsbFunctions(
 }
 
 V1_0::Status UsbGadget::tearDownGadget() {
-  ALOGI("setCurrentUsbFunctions None");
+  ALOGI("Tearing down Gadget");
 
   if (!WriteStringToFile("none", PULLUP_PATH))
     ALOGI("Gadget cannot be pulled down: %s", PULLUP_PATH);
@@ -243,7 +241,12 @@ V1_0::Status UsbGadget::tearDownGadget() {
   if (mMonitorCreated) {
     uint64_t flag = 100;
     // Stop the monitor thread by writing into signal fd.
-    write(mEventFd, &flag, sizeof(flag));
+    unsigned long ret = TEMP_FAILURE_RETRY(write(mEventFd, &flag, sizeof(flag)));
+    if (ret < 0) {
+      ALOGE("Error writing errno=%d", errno);
+    } else if (ret < sizeof(flag)) {
+      ALOGE("Short write length=%zd", ret);
+    }
     mMonitor->join();
     mMonitorCreated = false;
     ALOGI("mMonitor destroyed");
@@ -331,7 +334,6 @@ V1_0::Status UsbGadget::setupFunctions(
 
   bool ffsEnabled = false;
   int i = 0;
-  std::string bootMode = GetProperty(PERSISTENT_BOOT_MODE, "");
 
   if (((functions & GadgetFunction::MTP) != 0)) {
     ffsEnabled = true;
@@ -354,7 +356,6 @@ V1_0::Status UsbGadget::setupFunctions(
 
     if (inotify_add_watch(inotifyFd, "/dev/usb-ffs/ptp/", IN_ALL_EVENTS) == -1)
       return Status::ERROR;
-
 
     if (linkFunction("ffs.ptp", i++)) return Status::ERROR;
 
@@ -453,9 +454,6 @@ Return<void> UsbGadget::setCurrentUsbFunctions(
   if (status != Status::SUCCESS) {
     goto error;
   }
-
-  // Leave the gadget pulled down to give time for the host to sense disconnect.
-  usleep(DISCONNECT_WAIT_US);
 
   if (functions == static_cast<uint64_t>(GadgetFunction::NONE)) {
     if (callback == NULL) return Void();
